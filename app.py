@@ -351,9 +351,9 @@ def create_input_form():
                 "Monthly In-hand Salary ($)", min_value=0.0, value=4000.0)
 
         with col2:
-            month = st.selectbox("Month", [
-                "January", "February", "March", "May", "June", "July", "August", "September", "October", "November", "December"
-            ])
+            # month = st.selectbox("Month", [
+            #     "January", "February", "March", "May", "June", "July", "August", "September", "October", "November", "December"
+            # ])
             num_bank_accounts = st.number_input(
                 "Number of Bank Accounts", min_value=0, value=3)
             num_credit_card = st.number_input(
@@ -402,14 +402,17 @@ def create_input_form():
                 credit_history_months = st.number_input(
                     "Months", min_value=0, max_value=11, value=0)
 
+            # CHANGE: Added an empty string as the first option to force a selection.
             payment_of_min_amount = st.selectbox(
-                "Payment of Minimum Amount", ["Yes", "No"])
+                "Payment of Minimum Amount", ["", "Yes", "No"])
+            # CHANGE: Added an empty string as the first option to force a selection.
             credit_mix = st.selectbox(
-                "Credit Mix", ["Good", "Standard", "Bad"])
+                "Credit Mix", ["", "Good", "Standard", "Bad"])
 
         with col6:
+            # CHANGE: Added an empty string as the first option to force a selection.
             payment_behaviour = st.selectbox("Payment Behaviour", [
-                "high_spent_large_value_payments", "high_spent_medium_value_payments", "high_spent_small_value_payments",
+                "", "high_spent_large_value_payments", "high_spent_medium_value_payments", "high_spent_small_value_payments",
                 "low_spent_large_value_payments", "low_spent_medium_value_payments",
                 "low_spent_small_value_payments"
             ])
@@ -424,6 +427,19 @@ def create_input_form():
             "Predict Credit Score", type="primary")
 
         if submitted:
+            # --- START OF VALIDATION LOGIC ---
+            # CHANGE: Added conditional checks for key categorical fields.
+            if (not occupation or not credit_mix or not payment_of_min_amount or
+                    not payment_behaviour):
+                st.error("Please fill in all the required fields.")
+                return None  # Stop execution if validation fails
+
+            # CHANGE: Added validation for multi-select field.
+            if not type_of_loan:
+                st.error("Please select at least one type of loan.")
+                return None
+
+            # --- END OF VALIDATION LOGIC ---
             # First, construct the history age string from the two number inputs
             credit_history_age_str = f"{credit_history_years} Years and {credit_history_months} Months"
             # Prepare input data
@@ -479,7 +495,7 @@ def display_prediction(prediction, probability=None):
     with col2:
         st.markdown(f"""
         <div style='text-align: center; padding: 20px; border-radius: 10px; 
-                    background-color: #f0f2f6; margin: 20px 0;'>
+                    background-color: #2f3237; margin: 20px 0;'>
             <h2>{color_mapping.get(predicted_score, '❓')} Credit Score: {predicted_score}</h2>
         </div>
         """, unsafe_allow_html=True)

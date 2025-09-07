@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -7,8 +7,8 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Copy application code
-COPY . .
-
+COPY ["models/best_rf_model.joblib", "models/feature_scaler.joblib", "./models/"]
+COPY "app.py" .
 # Expose Streamlit port
 EXPOSE 8501
 
