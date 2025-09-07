@@ -1,2 +1,5 @@
 test.csv
 train.csv
+*.pkl
+*.joblib
+data/processed_credit_data.csv
