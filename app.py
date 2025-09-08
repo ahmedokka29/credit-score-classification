@@ -1,11 +1,12 @@
+from xml.parsers.expat import model
 import streamlit as st
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Union
 import warnings
 import joblib
-
-
+from utils.predictions import load_model, load_scaler, predict_with_thresholds_catboost
+from utils.preprocessing import CreditScorePreprocessor, CreditDataPreprocessor
 warnings.filterwarnings('ignore')
 
 # Configure page
@@ -15,317 +16,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-
-class CreditScorePreprocessor:
-    """
-    Preprocessing pipeline for credit score prediction.
-    Transforms raw input features to model-ready format.
-    """
-
-    def __init__(self, scaler):  # <-- Add scaler as an argument
-        """Initialize the preprocessor."""
-        self.scaler = scaler  # <-- Store the scaler instance
-        self.loan_types = [
-            'mortgage_loan', 'home_equity_loan', 'debt_consolidation_loan',
-            'credit-builder_loan', 'auto_loan', 'payday_loan',
-            'not_specified', 'personal_loan', 'student_loan'
-        ]
-
-        self.occupations = [
-            'architect', 'developer', 'doctor', 'engineer', 'entrepreneur',
-            'journalist', 'lawyer', 'manager', 'mechanic', 'media_manager',
-            'musician', 'scientist', 'teacher', 'writer'
-        ]
-
-        self.months = [
-            'august', 'february', 'january', 'july', 'june',
-            'march', 'may'
-        ]
-
-    def clean_and_standardize_text(self, text: str) -> str:
-        """Clean and standardize text input."""
-        if pd.isna(text) or text == '':
-            return np.nan
-        return str(text).lower().replace(' ', '_').strip()
-
-    def parse_credit_history_age(self, credit_history: str) -> float:
-        """Parse credit history age from text format to months."""
-        if pd.isna(credit_history) or str(credit_history).lower() == 'na':
-            return np.nan
-
-        try:
-            # Handle format like "22 Years and 1 Months"
-            parts = str(credit_history).replace('_', ' ').split(' and ')
-            years = int(parts[0].split(' ')[0]) * 12
-            months = int(parts[1].split(' ')[0])
-            return years + months
-        except:
-            return np.nan
-
-    def process_loan_types(self, type_of_loan: str) -> Dict[str, int]:
-        """Process loan types and create binary features."""
-        loan_features = {f'has_{loan}': 0 for loan in self.loan_types}
-
-        if pd.notna(type_of_loan):
-            # Split loan types by various delimiters
-            loan_list = str(type_of_loan).replace(
-                '_and_', ', ').replace(' and ', ', ').split(', ')
-            loan_list = [loan.strip().lower().replace(' ', '_')
-                         for loan in loan_list]
-
-            for loan in loan_list:
-                feature_name = f'has_{loan}'
-                if feature_name in loan_features:
-                    loan_features[feature_name] = 1
-
-        return loan_features
-
-    def create_occupation_features(self, occupation: str) -> Dict[str, int]:
-        """Create occupation dummy variables."""
-        occupation_features = {
-            f'occupation_{occ}': 0 for occ in self.occupations}
-
-        if pd.notna(occupation):
-            clean_occupation = self.clean_and_standardize_text(occupation)
-            feature_name = f'occupation_{clean_occupation}'
-            if feature_name in occupation_features:
-                occupation_features[feature_name] = 1
-
-        return occupation_features
-
-    # def create_month_features(self, month: str) -> Dict[str, int]:
-    #     """Create month dummy variables."""
-    #     month_features = {f'month_{m}': 0 for m in self.months}
-
-    #     if pd.notna(month):
-    #         clean_month = self.clean_and_standardize_text(month)
-    #         feature_name = f'month_{clean_month}'
-    #         if feature_name in month_features:
-    #             month_features[feature_name] = 1
-
-    #     return month_features
-
-    def create_credit_mix_features(self, credit_mix: str) -> Dict[str, int]:
-        """Create credit mix dummy variables."""
-        credit_mix_features = {'credit_mix_good': 0, 'credit_mix_standard': 0}
-
-        if pd.notna(credit_mix):
-            clean_credit_mix = self.clean_and_standardize_text(credit_mix)
-            if clean_credit_mix == 'good':
-                credit_mix_features['credit_mix_good'] = 1
-            elif clean_credit_mix == 'standard':
-                credit_mix_features['credit_mix_standard'] = 1
-
-        return credit_mix_features
-
-    def create_payment_features(self, payment_of_min_amount: str, payment_behaviour: str) -> Dict[str, int]:
-        """Create payment-related features."""
-        payment_features = {
-            'payment_of_min_amount_yes': 0,
-            'high_spent_medium_value_payments': 0,
-            'high_spent_small_value_payments': 0,
-            'low_spent_large_value_payments': 0,
-            'low_spent_medium_value_payments': 0,
-            'low_spent_small_value_payments': 0
-        }
-
-        # Payment of minimum amount
-        if pd.notna(payment_of_min_amount):
-            if self.clean_and_standardize_text(payment_of_min_amount) == 'yes':
-                payment_features['payment_of_min_amount_yes'] = 1
-
-        # Payment behaviour
-        if pd.notna(payment_behaviour):
-            clean_behaviour = self.clean_and_standardize_text(
-                payment_behaviour)
-            feature_name = clean_behaviour
-            if feature_name in payment_features:
-                payment_features[feature_name] = 1
-
-        return payment_features
-
-    def handle_outliers(self, value: float, column: str) -> float:
-        """Handle outliers based on business logic."""
-        if pd.isna(value):
-            return value
-
-        # Define reasonable ranges based on domain knowledge
-        outlier_ranges = {
-            'age': (18, 80),
-            'annual_income': (0, 500000),
-            'monthly_inhand_salary': (0, 50000),
-            'num_bank_accounts': (0, 20),
-            'num_credit_card': (0, 20),
-            'interest_rate': (0, 50),
-            'num_of_loan': (0, 20),
-            'delay_from_due_date': (0, 60),
-            'num_of_delayed_payment': (0, 50),
-            'num_credit_inquiries': (0, 20),
-            'outstanding_debt': (0, 200000),
-            'credit_utilization_ratio': (0, 100),
-            'total_emi_per_month': (0, 10000),
-            'amount_invested_monthly': (0, 10000),
-            'monthly_balance': (-5000, 20000)
-        }
-
-        if column in outlier_ranges:
-            min_val, max_val = outlier_ranges[column]
-            if value < min_val or value > max_val:
-                # Return median value for outliers
-                median_values = {
-                    'age': 30,
-                    'annual_income': 50000,
-                    'monthly_inhand_salary': 4000,
-                    'num_bank_accounts': 3,
-                    'num_credit_card': 4,
-                    'interest_rate': 15,
-                    'num_of_loan': 2,
-                    'delay_from_due_date': 15,
-                    'num_of_delayed_payment': 5,
-                    'num_credit_inquiries': 3,
-                    'outstanding_debt': 20000,
-                    'credit_utilization_ratio': 30,
-                    'total_emi_per_month': 1000,
-                    'amount_invested_monthly': 500,
-                    'monthly_balance': 2000
-                }
-                return median_values.get(column, value)
-
-        return value
-
-    def transform_input(self, input_data: Dict[str, Any]) -> np.ndarray:
-        """Transform raw input data to model features."""
-
-        # Initialize feature vector with expected feature names
-        features = {}
-
-        # Basic numerical features
-        numerical_features = [
-            'age', 'annual_income', 'monthly_inhand_salary', 'num_bank_accounts',
-            'num_credit_card', 'interest_rate', 'num_of_loan', 'delay_from_due_date',
-            'num_of_delayed_payment', 'changed_credit_limit', 'num_credit_inquiries',
-            'outstanding_debt', 'credit_utilization_ratio', 'total_emi_per_month',
-            'amount_invested_monthly', 'monthly_balance'
-        ]
-
-        for feature in numerical_features:
-            value = input_data.get(feature, np.nan)
-            if pd.notna(value):
-                features[feature] = self.handle_outliers(float(value), feature)
-            else:
-                features[feature] = np.nan
-
-        # Process credit history age
-        credit_history_raw = input_data.get('credit_history_age', '')
-        features['credit_history_age'] = self.parse_credit_history_age(
-            credit_history_raw)
-
-        # Process categorical features
-        loan_features = self.process_loan_types(
-            input_data.get('type_of_loan', ''))
-        features.update(loan_features)
-
-        # month_features = self.create_month_features(
-        #     input_data.get('month', ''))
-        # features.update(month_features)
-
-        occupation_features = self.create_occupation_features(
-            input_data.get('occupation', ''))
-        features.update(occupation_features)
-
-        credit_mix_features = self.create_credit_mix_features(
-            input_data.get('credit_mix', ''))
-        features.update(credit_mix_features)
-
-        payment_features = self.create_payment_features(
-            input_data.get('payment_of_min_amount', ''),
-            input_data.get('payment_behaviour', '')
-        )
-        features.update(payment_features)
-
-        # Fill missing numerical values with medians
-        feature_medians = {
-            'age': 30, 'annual_income': 50000, 'monthly_inhand_salary': 4000,
-            'num_bank_accounts': 3, 'num_credit_card': 4, 'interest_rate': 15,
-            'num_of_loan': 2, 'delay_from_due_date': 15, 'num_of_delayed_payment': 5,
-            'changed_credit_limit': 0, 'num_credit_inquiries': 3, 'outstanding_debt': 20000,
-            'credit_utilization_ratio': 30, 'credit_history_age': 240,
-            'total_emi_per_month': 1000, 'amount_invested_monthly': 500,
-            'monthly_balance': 2000
-        }
-
-        for feature, median_val in feature_medians.items():
-            if pd.isna(features.get(feature)):
-                features[feature] = median_val
-
-        # Expected feature order (based on your final feature set)
-        expected_features = [
-            'age', 'annual_income', 'monthly_inhand_salary', 'num_bank_accounts',
-            'num_credit_card', 'interest_rate', 'num_of_loan', 'delay_from_due_date',
-            'num_of_delayed_payment', 'changed_credit_limit', 'num_credit_inquiries',
-            'outstanding_debt', 'credit_utilization_ratio', 'credit_history_age',
-            'total_emi_per_month', 'amount_invested_monthly', 'monthly_balance'
-        ]
-
-        # Add all loan type features
-        expected_features.extend([f'has_{loan}' for loan in self.loan_types])
-
-        # Add month features
-        # expected_features.extend([f'month_{month}' for month in self.months])
-
-        # Add occupation features
-        expected_features.extend(
-            [f'occupation_{occ}' for occ in self.occupations])
-
-        # Add other categorical features
-        expected_features.extend(['credit_mix_good', 'credit_mix_standard'])
-        expected_features.extend(['payment_of_min_amount_yes'])
-        expected_features.extend([
-            'high_spent_medium_value_payments', 'high_spent_small_value_payments',
-            'low_spent_large_value_payments',
-            'low_spent_medium_value_payments',  'low_spent_small_value_payments'
-        ])
-
-        # Create feature array in expected order
-        feature_array = []
-        for feature_name in expected_features:
-            feature_array.append(features.get(feature_name, 0))
-
-        final_features = np.array(feature_array).reshape(1, -1)
-
-        # 🚀 SCALING STEP: Apply the scaler to the numerical features
-        if self.scaler:
-            # Get the indices of the numerical features that need scaling
-            numerical_feature_names = [
-                'age', 'annual_income', 'monthly_inhand_salary', 'num_bank_accounts',
-                'num_credit_card', 'interest_rate', 'num_of_loan', 'delay_from_due_date',
-                'num_of_delayed_payment', 'changed_credit_limit', 'num_credit_inquiries',
-                'outstanding_debt', 'credit_utilization_ratio', 'credit_history_age',
-                'total_emi_per_month', 'amount_invested_monthly', 'monthly_balance'
-            ]
-            numerical_indices = [expected_features.index(
-                feat) for feat in numerical_feature_names]
-
-            # Apply scaling only to the numerical columns
-            final_features[:, numerical_indices] = self.scaler.transform(
-                final_features[:, numerical_indices])
-
-        return final_features
-
-
-def load_scaler():
-    """Load the trained StandardScaler."""
-    scaler = joblib.load("models/feature_scaler.joblib")
-    return scaler
-
-
-def load_model():
-    """
-    Load the trained model.
-    """
-    model = joblib.load("models/best_rf_model.joblib")
-    return model
 
 
 def create_input_form():
@@ -494,7 +184,7 @@ def display_prediction(prediction, probability=None):
 
     with col2:
         st.markdown(f"""
-        <div style='text-align: center; padding: 20px; border-radius: 10px; 
+        <div style='text-align: center; padding: 20px; border-radius: 10px;
                     background-color: #2f3237; margin: 20px 0;'>
             <h2>{color_mapping.get(predicted_score, '❓')} Credit Score: {predicted_score}</h2>
         </div>
@@ -535,13 +225,58 @@ def display_prediction(prediction, probability=None):
         """)
 
 
+def batch_prediction_interface(model, thresholds, scaler):
+    st.subheader("📂 Batch Credit Score Prediction")
+    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+    if uploaded_file is not None:
+        # Load dataset
+        df = pd.read_csv(uploaded_file)
+
+        st.write("Preview of uploaded data:")
+        st.dataframe(df.head(10))
+
+        # Run your bulk preprocessor
+        preprocessor = CreditDataPreprocessor(
+            dataframe=df)   # df = uploaded CSV
+        processed_df = preprocessor.run_full_pipeline()
+
+        # Drop target column if present
+        if "credit_score" in processed_df.columns:
+            X = processed_df.drop(columns=["credit_score"])
+        else:
+            X = processed_df
+        scaler_features = scaler.feature_names_in_.tolist()
+        # Scale features
+        X[scaler_features] = scaler.transform(X[scaler_features])
+
+        # Predict with thresholds
+        predictions = predict_with_thresholds_catboost(model, X, thresholds)
+
+        # Map predictions back to labels
+        credit_score_mapping = {0: "Poor", 1: "Good", 2: "Standard"}
+        processed_df["predicted_credit_score"] = [
+            credit_score_mapping[p] for p in predictions]
+
+        st.success("✅ Predictions generated successfully!")
+        st.dataframe(
+            processed_df[["predicted_credit_score"]].head(10))
+
+        # Download option
+        csv_out = processed_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="⬇️ Download Predictions",
+            data=csv_out,
+            file_name="credit_predictions.csv",
+            mime="text/csv"
+        )
+
+
 def main():
     """Main application function."""
 
     # Load model and scaler
-    model = load_model()
+    model, thresholds = load_model()
     scaler = load_scaler()
-
     # Initialize preprocessor with the scaler
     preprocessor = CreditScorePreprocessor(scaler=scaler)
 
@@ -550,12 +285,12 @@ def main():
         st.header("ℹ️ About This App")
         st.write("""
         This app predicts credit scores based on various financial and personal factors.
-        
+
         **Credit Score Categories:**
         - 🔴 **Poor**: Needs significant improvement
-        - 🟡 **Standard**: Average creditworthiness  
+        - 🟡 **Standard**: Average creditworthiness
         - 🟢 **Good**: Excellent creditworthiness
-        
+
         **How to use:**
         1. Fill in your financial information
         2. Click 'Predict Credit Score'
@@ -568,7 +303,8 @@ def main():
 
     # Create main input form
     input_data = create_input_form()
-
+    st.markdown("---")
+    batch_prediction_interface(model, thresholds, scaler)
     # Process prediction if form is submitted
     if input_data:
         try:
@@ -586,8 +322,13 @@ def main():
 
             # Make prediction
             if model is not None and scaler is not None:
-                prediction = model.predict(features)[0]
+                if thresholds:
+                    prediction = predict_with_thresholds_catboost(
+                        model, features, thresholds)[0]
+                else:
+                    prediction = model.predict(features)[0]
 
+                # prediction = model.predict(features)[0]
                 # Get prediction probabilities if available
                 try:
                     probability = model.predict_proba(features)

@@ -7,7 +7,9 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Copy application code
-COPY ["models/best_rf_model.joblib", "models/feature_scaler.joblib", "./models/"]
+COPY ["models/catboost_credit_model.pkl", "models/min_max_scaler.joblib", "./models/"]
+COPY 'utils/predictions.py' ./utils/
+COPY 'utils/preprocessing.py' ./utils/
 COPY "app.py" .
 # Expose Streamlit port
 EXPOSE 8501
